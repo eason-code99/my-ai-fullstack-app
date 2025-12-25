@@ -1,0 +1,14 @@
+# === Python 后端忽略 ===
+ai-hello-world/venv/
+ai-hello-world/__pycache__/
+ai-hello-world/*.pyc
+ai-hello-world/.env
+ai-hello-world/memory.db
+ai-hello-world/.DS_Store
+
+# === Next.js 前端忽略 ===
+ai-frontend/node_modules/
+ai-frontend/.next/
+ai-frontend/.env
+ai-frontend/.env.local
+ai-frontend/.DS_Store
