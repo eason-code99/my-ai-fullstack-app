@@ -26,7 +26,9 @@ export default function Home() {
     // 2. 拿着身份证去问后端要之前的聊天记录
     const fetchHistory = async () => {
       try {
-        const res = await fetch(`http://127.0.0.1:8000/history/${myId}`);
+        const res = await fetch(
+          `https://my-ai-fullstack-app-production.up.railway.app/history/${myId}`
+        );
         const data = await res.json();
         // 如果后端真给了记录，就显示在屏幕上
         if (data.messages && data.messages.length > 0) {
@@ -55,14 +57,17 @@ export default function Home() {
     setIsLoading(true);
 
     try {
-      const response = await fetch("http://127.0.0.1:8000/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messages: newHistory,
-          sessionId: sessionId, // <--- 【修改这里】加上这行，带上身份证
-        }),
-      });
+      const response = await fetch(
+        "https://my-ai-fullstack-app-production.up.railway.app/chat",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            messages: newHistory,
+            sessionId: sessionId, // <--- 【修改这里】加上这行，带上身份证
+          }),
+        }
+      );
 
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
