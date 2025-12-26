@@ -5,6 +5,7 @@ import dashscope
 from dashscope import ImageSynthesis
 from dotenv import load_dotenv
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware  # 👈 新增：门卫组件
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -14,13 +15,22 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-# === 启动标记 V2.1 ===
-print("🚀 Server is starting... Version: ERROR_CATCHER_V2.1")
+# === 启动标记 V2.2 (CORS修复版) ===
+print("🚀 Server is starting... Version: CORS_FIXED_V2.2")
 
 app = FastAPI()
 
+# === 🔥 核心修复：添加 CORS 门卫 🔥 ===
+# 这段代码允许任何网站（包括你的 Vercel 前端）来访问后端
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 允许所有来源 (生产环境可以改成具体网址，但这里用 * 最稳)
+    allow_credentials=True,
+    allow_methods=["*"],  # 允许所有方法 (GET, POST, OPTIONS 等)
+    allow_headers=["*"],  # 允许所有请求头
+)
+
 # === 1. 定义模型 ===
-# 强制检查 Key，如果没有 Key，给一个占位符防止启动报错，但在调用时会报错
 api_key_val = os.getenv("DASHSCOPE_API_KEY") or "sk-missing-key"
 
 llm = ChatOpenAI(
@@ -107,34 +117,30 @@ class ChatRequest(BaseModel):
     session_id: str = "default_user"
 
 
-# === 5. 核心接口 (带防弹护盾) ===
+# === 5. 核心接口 ===
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    # 🔥 全局异常捕获：无论发生什么，都把错误发回给前端显示 🔥
     try:
         user_input = request.message
         session_id = request.session_id
         print(f"📥 收到消息: {user_input}")
 
-        # 1. 意图识别
+        # 意图识别
         try:
             intent = await router_chain.ainvoke({"user_input": user_input})
             intent = intent.strip().upper()
             print(f"🧠 意图: {intent}")
         except Exception as e:
             print(f"⚠️ 意图识别失败: {e}")
-            # 如果识别失败，很有可能是 Key 错了，这里记录一下，默认转聊天
             intent = "TEXT"
 
-        # 2. 执行逻辑
+        # 执行逻辑
         if "IMAGE" in intent:
             url = generate_image_from_text(user_input)
-            # 如果 url 开头是❌，说明画图函数内部报错了，直接把错误显示出来
             if url.startswith("❌"):
                 return {"response": f"画图失败了: {url}"}
             return {"response": f"IMAGE_URL:{url}"}
         else:
-            # 聊天模式
             response = await with_message_history.ainvoke(
                 {"user_input": user_input},
                 config={"configurable": {"session_id": session_id}},
@@ -142,14 +148,8 @@ async def chat(request: ChatRequest):
             return {"response": response}
 
     except Exception as e:
-        # 🚨 捕捉所有漏网之鱼 🚨
         error_msg = str(e)
         print(f"💥 严重崩溃: {error_msg}")
-        # 如果是 401，提示用户 Key 有问题
-        if "401" in error_msg:
-            return {
-                "response": "❌ 权限错误 (401): 请检查 Railway 里的 API Key 是否正确，或者阿里云是否欠费/未开通。"
-            }
         return {"response": f"❌ 系统内部报错: {error_msg}"}
 
 
