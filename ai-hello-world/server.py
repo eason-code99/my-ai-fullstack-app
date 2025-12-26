@@ -5,7 +5,7 @@ import dashscope
 from dashscope import ImageSynthesis
 from dotenv import load_dotenv
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware  # 👈 新增：门卫组件
+from fastapi.middleware.cors import CORSMiddleware  # 👈 必须要有这个！
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -15,23 +15,23 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-# === 启动标记 V2.2 (CORS修复版) ===
+# === 🚩 启动标记：必须在日志里看到 V2.2 才是对的！ ===
 print("🚀 Server is starting... Version: CORS_FIXED_V2.2")
 
 app = FastAPI()
 
-# === 🔥 核心修复：添加 CORS 门卫 🔥 ===
-# 这段代码允许任何网站（包括你的 Vercel 前端）来访问后端
+# === 🔥 核心修复：允许跨域 (CORS) 🔥 ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 允许所有来源 (生产环境可以改成具体网址，但这里用 * 最稳)
+    allow_origins=["*"],  # 允许所有前端访问
     allow_credentials=True,
-    allow_methods=["*"],  # 允许所有方法 (GET, POST, OPTIONS 等)
-    allow_headers=["*"],  # 允许所有请求头
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # === 1. 定义模型 ===
-api_key_val = os.getenv("DASHSCOPE_API_KEY") or "sk-missing-key"
+# 防止 Key 为空导致的启动报错
+api_key_val = os.getenv("DASHSCOPE_API_KEY") or "sk-placeholder"
 
 llm = ChatOpenAI(
     model="qwen-turbo",
@@ -97,8 +97,9 @@ with_message_history = RunnableWithMessageHistory(
 def generate_image_from_text(prompt):
     try:
         current_key = os.getenv("DASHSCOPE_API_KEY")
-        if not current_key:
-            return "❌ 错误: 环境变量 DASHSCOPE_API_KEY 未设置"
+        if not current_key or current_key.startswith("sk-placeholder"):
+            return "❌ 错误: API Key 未设置或无效"
+
         dashscope.api_key = current_key
 
         rsp = ImageSynthesis.call(
@@ -125,20 +126,16 @@ async def chat(request: ChatRequest):
         session_id = request.session_id
         print(f"📥 收到消息: {user_input}")
 
-        # 意图识别
         try:
             intent = await router_chain.ainvoke({"user_input": user_input})
             intent = intent.strip().upper()
-            print(f"🧠 意图: {intent}")
-        except Exception as e:
-            print(f"⚠️ 意图识别失败: {e}")
+        except:
             intent = "TEXT"
 
-        # 执行逻辑
         if "IMAGE" in intent:
             url = generate_image_from_text(user_input)
             if url.startswith("❌"):
-                return {"response": f"画图失败了: {url}"}
+                return {"response": f"画图失败: {url}"}
             return {"response": f"IMAGE_URL:{url}"}
         else:
             response = await with_message_history.ainvoke(
@@ -148,14 +145,11 @@ async def chat(request: ChatRequest):
             return {"response": response}
 
     except Exception as e:
-        error_msg = str(e)
-        print(f"💥 严重崩溃: {error_msg}")
-        return {"response": f"❌ 系统内部报错: {error_msg}"}
+        print(f"💥 错误: {e}")
+        return {"response": f"❌ 服务器内部错误: {str(e)}"}
 
 
 if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8000)
-
-# Version: CORS_FIXED_V2.2
