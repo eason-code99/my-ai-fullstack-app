@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
@@ -30,6 +31,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def gei_beijing_time():
+    """获取当前北京时间"""
+    utc_now = datetime.utcnow()
+    beijing_now = utc_now + timedelta(hours=8)
+    return beijing_now.strftime("%Y-%m-%d %H:%M:%S")
+
+
+current_time = gei_beijing_time()
+
 # === 1. 初始化模型 (阿里云) ===
 model = ChatOpenAI(
     model="qwen-turbo",  # 这是一个较稳的模型，如果报错可尝试 qwen-plus
@@ -43,7 +54,11 @@ model = ChatOpenAI(
 # === 2. 定义 Prompt ===
 prompt_template = ChatPromptTemplate.from_messages(
     [
-        ("system", "你是一个全栈技术专家，擅长用通俗易懂的语言解释技术问题。"),
+        (
+            "system",
+            f"当前北京时间是：{current_time}"
+            "你是一个全栈技术专家，擅长用通俗易懂的语言解释技术问题。",
+        ),
         MessagesPlaceholder(variable_name="history"),
         ("human", "{user_input}"),
     ]
