@@ -1,155 +1,146 @@
 import os
 from datetime import datetime, timedelta
 
+import dashscope
+from dashscope import ImageSynthesis
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-
-# 👇 依然使用 SQL 数据库组件
-from langchain_community.chat_message_histories import SQLChatMessageHistory
+from fastapi import FastAPI
+from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
-
-# === LangChain 核心组件 ===
 from langchain_openai import ChatOpenAI
-
-# 在 import 部分加入这行
+from pydantic import BaseModel
 
 # 加载环境变量
 load_dotenv()
 
 app = FastAPI()
 
-# 配置跨域
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+# === 1. 定义模型 ===
+# 我们复用同一个模型配置，既做“经理”也做“作家”
+llm = ChatOpenAI(
+    model="qwen-turbo",
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
+    temperature=0.1,  # 经理需要冷静，temperature 设低一点
 )
 
+# === 2. 🧠 定义“意图识别经理” (Router) ===
+# 它的唯一工作就是判断：这是画图请求 (IMAGE) 还是聊天请求 (TEXT)？
+router_template = ChatPromptTemplate.from_messages(
+    [
+        (
+            "system",
+            """你是一个意图识别专家。请判断用户的输入意图。
+    - 如果用户明确想要生成图片、画画、照片、绘图，请只回复: IMAGE
+    - 如果用户只是在聊天、提问、或者用比喻（比如'画大饼'），请只回复: TEXT
+    不要回复任何其他废话，只回单词。""",
+        ),
+        ("human", "{user_input}"),
+    ]
+)
 
-def gei_beijing_time():
-    """获取当前北京时间"""
+router_chain = router_template | llm | StrOutputParser()
+
+
+# === 3. 定义“作家” (Chat Chain) ===
+def get_beijing_time():
     utc_now = datetime.utcnow()
     beijing_now = utc_now + timedelta(hours=8)
     return beijing_now.strftime("%Y-%m-%d %H:%M:%S")
 
 
-current_time = gei_beijing_time()
-
-# === 1. 初始化模型 (阿里云) ===
-model = ChatOpenAI(
-    model="qwen-turbo",  # 这是一个较稳的模型，如果报错可尝试 qwen-plus
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-    # 这里的 `or ""` 是为了防止获取不到 Key 变成 None，转成空字符串更安全
-    api_key=os.getenv("DASHSCOPE_API_KEY"),
-    streaming=True,
-    temperature=0.7,
-)
-
-# === 2. 定义 Prompt ===
-prompt_template = ChatPromptTemplate.from_messages(
+chat_template = ChatPromptTemplate.from_messages(
     [
-        (
-            "system",
-            f"当前北京时间是：{current_time}"
-            "你是一个全栈技术专家，擅长用通俗易懂的语言解释技术问题。",
-        ),
+        ("system", f"你是一个全栈AI助手。当前北京时间是：{get_beijing_time()}。"),
         MessagesPlaceholder(variable_name="history"),
         ("human", "{user_input}"),
     ]
 )
 
-# === 3. 创建链 ===
-chain = prompt_template | model | StrOutputParser()
+# 这里稍微调高 temperature，让聊天更有创意
+chat_model_creative = ChatOpenAI(
+    model="qwen-turbo",
+    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
+    temperature=0.7,
+)
+
+chat_chain = chat_template | chat_model_creative | StrOutputParser()
+
+# 内存记忆
+store = {}
 
 
-# === 4. 关键修改：同步数据库连接 ===
-# === 原来的代码 ===
-# return SQLChatMessageHistory(
-#     session_id=session_id,
-#     connection_string="sqlite:///memory.db"
-# )
-
-
-# === ✨ 修改后的代码 (适配云数据库) ===
 def get_session_history(session_id: str):
-    # 1. 优先从环境变量读取云数据库地址
-    # 2. 如果没读到（在本地测试时），还是用本地 SQLite
-    db_url = os.getenv("DATABASE_URL", "sqlite:///memory.db")
-
-    # ⚠️ 注意：Neon 的地址通常是 postgresql://...
-    # 如果你的地址是 postgres:// 开头，SQLAlchemy 需要改成 postgresql://
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
-
-    return SQLChatMessageHistory(session_id=session_id, connection_string=db_url)
+    if session_id not in store:
+        store[session_id] = ChatMessageHistory()
+    return store[session_id]
 
 
-chain_with_history = RunnableWithMessageHistory(
-    chain,
+with_message_history = RunnableWithMessageHistory(
+    chat_chain,
     get_session_history,
     input_messages_key="user_input",
     history_messages_key="history",
 )
 
 
-# === 5. 关键修改：生成器改为同步函数 ===
-# 去掉了 async，使用普通的 def。FastAPI 会自动在后台线程运行它，不会卡住服务器。
-def generate_stream(messages, session_id):
-    last_user_message = messages[-1]["content"]
-
-    # 使用 .stream() 而不是 .astream()
+# === 4. 定义“画家” (Wanx) ===
+def generate_image_from_text(prompt):
     try:
-        for chunk in chain_with_history.stream(
-            {"user_input": last_user_message},
-            config={"configurable": {"session_id": session_id}},
-        ):
-            yield chunk
+        dashscope.api_key = os.getenv("DASHSCOPE_API_KEY")
+        print(f"🎨 画家正在工作: {prompt}")
+        rsp = ImageSynthesis.call(
+            model=ImageSynthesis.Models.wanx_v1, prompt=prompt, n=1, size="1024*1024"
+        )
+        if rsp.status_code == 200:
+            return rsp.output.results[0].url
+        else:
+            return f"画图失败: {rsp.code}, {rsp.message}"
     except Exception as e:
-        print(f"生成回复时出错: {e}")
-        yield f"系统繁忙，请稍后再试。(错误: {str(e)})"
+        return f"画图出错: {str(e)}"
 
 
+class ChatRequest(BaseModel):
+    message: str
+    session_id: str = "default_user"
+
+
+# === 5. 核心接口 (AI 路由逻辑) ===
 @app.post("/chat")
-async def chat(request: Request):
-    data = await request.json()
-    messages = data.get("messages", [])
-    session_id = data.get("sessionId", "default_user")
+async def chat(request: ChatRequest):
+    user_input = request.message
+    session_id = request.session_id
 
-    return StreamingResponse(
-        # 调用上面的同步生成器
-        generate_stream(messages, session_id),
-        media_type="text/event-stream",
-    )
-
-
-# === 6. 获取历史记录接口 ===
-@app.get("/history/{session_id}")
-def get_history(session_id: str):
-    # 直接读取数据库
+    # 🕵️‍♂️ 第一步：让经理判断意图 (AI 路由)
+    print(f"🧠 正在分析意图: {user_input}")
     try:
-        history_db = get_session_history(session_id)
-        return {"messages": history_db.messages}
+        # 这里虽然多了一次 API 调用，但换来了真正的智能
+        intent = await router_chain.ainvoke({"user_input": user_input})
+        intent = intent.strip().upper()  # 清洗一下结果，防止有空格
+        print(f"✅ 意图识别结果: {intent}")
     except Exception as e:
-        print(f"获取历史出错: {e}")
-        return {"messages": []}
+        # 如果经理请假了（报错），默认走聊天
+        print(f"❌ 路由报错: {e}")
+        intent = "TEXT"
+
+    # 🚦 第二步：根据意图分流
+    if "IMAGE" in intent:
+        # 走画图通道
+        image_url = generate_image_from_text(user_input)
+        return {"response": f"IMAGE_URL:{image_url}"}
+    else:
+        # 走聊天通道
+        response = await with_message_history.ainvoke(
+            {"user_input": user_input},
+            config={"configurable": {"session_id": session_id}},
+        )
+        return {"response": response}
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    # 删除旧的数据库文件，避免格式冲突（可选，但推荐）
-    if os.path.exists("memory.db"):
-        try:
-            os.remove("memory.db")
-            print("已清理旧的数据库文件")
-        except:
-            pass
-
-    print("🚀 服务正在启动 (同步数据库模式)...")
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
