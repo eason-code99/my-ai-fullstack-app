@@ -15,7 +15,6 @@ from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_openai import ChatOpenAI
 
 # 在 import 部分加入这行
-from pydantic import SecretStr
 
 # 加载环境变量
 load_dotenv()
@@ -36,7 +35,7 @@ model = ChatOpenAI(
     model="qwen-turbo",  # 这是一个较稳的模型，如果报错可尝试 qwen-plus
     base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     # 这里的 `or ""` 是为了防止获取不到 Key 变成 None，转成空字符串更安全
-    api_key=SecretStr(os.getenv("DASHSCOPE_API_KEY") or ""),
+    api_key=os.getenv("DASHSCOPE_API_KEY"),
     streaming=True,
     temperature=0.7,
 )
