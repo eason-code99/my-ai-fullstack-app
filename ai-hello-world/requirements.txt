@@ -1,9 +1,0 @@
-fastapi
-uvicorn
-python-dotenv
-langchain-openai
-langchain-community
-langchain-core
-pydantic
-requests
-dashscope
